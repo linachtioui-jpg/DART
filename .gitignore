@@ -1,5 +1,11 @@
+# Python
 __pycache__/
-*.pyc
-data/
-models/
+*.py[cod]
 .venv/
+
+# AirSim / Unreal
+Saved/
+Intermediate/
+Build/
+*.sln
+*.suo
