@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# AirSim / Unreal
+Saved/
+Intermediate/
+Build/
+*.sln
+*.suo
