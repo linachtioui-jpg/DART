@@ -1,28 +1,3 @@
-<<<<<<< HEAD
-import sys
-import os
-
-# STEP 1: Tell Python WHERE to look (The "Bridge")
-# This MUST happen before you try to import from simulation
-project_root = os.path.dirname(__file__)
-src_path = os.path.join(project_root, 'src')
-sys.path.append(src_path)
-
-# STEP 2: Now that the bridge is built, import your function
-# Use the function name you actually defined in drone_env.py
-try:
-    from simulation.drone_env import start_sim
-except ImportError as e:
-    print(f"Import Error: {e}")
-    print("Check if src/simulation/__init__.py exists!")
-    sys.exit(1)
-
-# STEP 3: The Start Button
-if __name__ == "__main__":
-    print("--- Project: Drone Trajectory Prediction & Control ---")
-    print("Initializing Simulation...")
-    start_sim()
-=======
 # ===== main.py =====
 """
 Main Entry Point — Drone Simulation & Dataset Pipeline
@@ -48,15 +23,18 @@ import pickle
 import json
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(__file__))
+# Point Python to the src directory
+project_root = os.path.dirname(__file__)
+sys.path.insert(0, os.path.join(project_root, 'src'))
 
-from config import DEFAULT_CONFIG
-from trajectory_generator import generate_trajectory, get_feature_names, TRAJECTORY_GENERATOR_VERSION
-from obstacle_simulation import simulate_obstacles, ObstacleSimulator
-from dataset_generator import generate_dataset, save_dataset, get_model_input
-from simulator import run_simulation, visualise_simulation
-from trajectory_predictor import TrajectoryPredictor
-from utils import print_section, set_seed, load_npy
+# Clean, explicit package imports
+from pipeline.config import DEFAULT_CONFIG
+from pipeline.trajectory_generator import generate_trajectory, get_feature_names, TRAJECTORY_GENERATOR_VERSION
+from pipeline.obstacle_simulation import simulate_obstacles, ObstacleSimulator
+from pipeline.dataset_generator import generate_dataset, save_dataset, get_model_input
+from pipeline.simulator import run_simulation, visualise_simulation
+from models.trajectory_predictor import TrajectoryPredictor
+from pipeline.utils import print_section, set_seed, load_npy
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -350,7 +328,7 @@ def demo_prediction() -> None:
 def demo_test_prediction() -> None:
     print_section("Step 8 · Prediction Model Evaluation")
 
-    from test_prediction_model import (
+    from pipeline.test_prediction_model import (
         evaluate_predictions,
         visualize_predictions,
         plot_error_distribution,
@@ -524,4 +502,3 @@ if __name__ == "__main__":
     print("   Model        →  models/trajectory_predictor.pkl")
     print("   Viz          →  outputs/simulation.png")
     print("   Eval plots   →  outputs/predictions_*.png")
->>>>>>> teammate/main
