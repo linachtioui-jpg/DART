@@ -1,15 +1,11 @@
-# Ignore python virtual environments
-.venv-1/
-.venv/
-venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
 
-# Ignore heavy local data fields
-dataset/
-outputs/
-benchmarks/
-
-# Ignore local OS metadata
-.DS_Store
-Thumbs.db
+# AirSim / Unreal
+Saved/
+Intermediate/
+Build/
+*.sln
+*.suo
