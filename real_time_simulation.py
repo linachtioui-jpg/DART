@@ -14,9 +14,9 @@ import numpy as np
 import time
 import torch
 
-import gym_pybullet_drones
-from gym_pybullet_drones.envs import CtrlAviary
-from gym_pybullet_drones.utils.enums import DroneModel
+##import gym_pybullet_drones
+##from gym_pybullet_drones.envs import CtrlAviary
+##from gym_pybullet_drones.utils.enums import DroneModel
 
 from models.trajectory_predictor import TrajectoryPredictor
 from control.controller import DroneController
@@ -33,7 +33,7 @@ class RealDroneSciFiArena:
         p.setRealTimeSimulation(0)
 
         self._setup_arena()
-        self.drone_id = self._load_clean_drone()
+        self.drone_id = self._load_custom_drone("models/drone.obj")
 
         self.seq_len = 20
         self.n_obstacles = 12
@@ -58,23 +58,89 @@ class RealDroneSciFiArena:
         vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[s/2 for s in size], rgbaColor=color)
         p.createMultiBody(0, col, vis, pos)
 
-    def _load_clean_drone(self):
-        # Dynamically locate where gym_pybullet_drones is installed on the system
-        package_dir = os.path.dirname(gym_pybullet_drones.__file__)
-        urdf_path = os.path.join(package_dir, "assets", "cf2x.urdf")
+    def _rewrite_urdf_no_transparency(self, urdf_path):
+        import re, shutil, os
+
+        with open(urdf_path, "r") as f:
+            content = f.read()
+
+        # Force all rgba attributes to full opacity
+        content = re.sub(
+            r'rgba="([\d.\s]+)"',
+            lambda m: f'rgba="{" ".join(m.group(1).split()[:3])} 1.0"',
+            content
+        )
+
+        # Write patched URDF next to the original so relative mesh paths still resolve
+        assets_dir = os.path.dirname(urdf_path)
+        patched_path = os.path.join(assets_dir, "cf2x_patched.urdf")
+
+        with open(patched_path, "w") as f:
+            f.write(content)
+
+        return patched_path
+
+    def _load_custom_drone(self, obj_path):
+        """Load any .obj file as a drone with a collision box underneath"""
+
+        corrective_quat = p.getQuaternionFromEuler([np.pi/2, 0.0, 0.0])  # Rotate model to face forward
+
         
-        if os.path.exists(urdf_path):
-            print(f"✅ Loading real Crazyflie drone (Scaled 2.8x) from package assets")
-            drone_id = p.loadURDF(urdf_path, [0, 0, 2.5], globalScaling=10.0)
-            # Force opacity and clear visualization properties
-            for i in range(p.getNumJoints(drone_id) + 1):
-                p.changeVisualShape(drone_id, i, rgbaColor=[1.0, 1.0, 1.0, 1.0])
-            return drone_id
-        else:
-            print("⚠️ Package assets missing. Using fallback drone.")
-            col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.25, 0.25, 0.08])
-            vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.25, 0.25, 0.08], rgbaColor=[0, 0.7, 1, 1])
-            return p.createMultiBody(0.8, col, vis, [0, 0, 2.5])
+        # Visual mesh from your downloaded .obj
+        visual_id = p.createVisualShape(
+            p.GEOM_MESH,
+            fileName=obj_path,
+            meshScale=[0.002, 0.002, 0.002],   # scale down — most models are huge
+            rgbaColor=[1.0, 1.0, 1.0, 1.0],
+            visualFrameOrientation=corrective_quat
+        )
+
+        # Simple box collision (mesh collision is slow and unstable in PyBullet)
+        collision_id = p.createCollisionShape(
+            p.GEOM_BOX,
+            halfExtents=[0.15, 0.15, 0.06]
+        )
+
+        drone_id = p.createMultiBody(
+            baseMass=0.5,
+            baseCollisionShapeIndex=collision_id,
+            baseVisualShapeIndex=visual_id,
+            basePosition=[0, 0, 2.5],
+            baseOrientation=p.getQuaternionFromEuler([0, 0, 0])
+        )
+
+        p.changeDynamics(drone_id, -1, linearDamping=0.05, angularDamping=30.0,lateralFriction=0.9,rollingFriction=0.1, spinningFriction=0.1, restitution=0.0,localInertiaDiagonal=[0.012, 0.012, 0.018])
+
+        return drone_id    
+
+    # def _load_clean_drone(self):
+    #     package_dir = os.path.dirname(gym_pybullet_drones.__file__)
+    #     urdf_path = os.path.join(package_dir, "assets", "cf2x.urdf")
+    #     urdf_path = self._rewrite_urdf_no_transparency(urdf_path)
+
+    #     if os.path.exists(urdf_path):
+    #         drone_id = p.loadURDF(
+    #             urdf_path,          # now points to cf2x_patched.urdf in assets/
+    #             [0, 0, 2.5],
+    #             globalScaling=10.0,
+    #             flags=p.URDF_USE_INERTIA_FROM_FILE
+    #         )   
+
+        #     num_joints = p.getNumJoints(drone_id)
+        #     for link_idx in [-1] + list(range(num_joints)):
+        #         p.changeVisualShape(
+        #             drone_id,
+        #             link_idx,
+        #             rgbaColor=[1.0, 1.0, 1.0, 1.0],
+        #             specularColor=[0.5, 0.5, 0.5]  # kills the transparent specular layer
+        #         )
+
+        #     return drone_id
+        # else:
+            # col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.25, 0.25, 0.08])
+            # vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.25, 0.25, 0.08],
+            #                         rgbaColor=[0, 0.7, 1, 1])
+            # return p.createMultiBody(0.8, col, vis, [0, 0, 2.5])
 
     def _create_dynamic_objects(self):
         obs_ids = []
@@ -141,6 +207,7 @@ class RealDroneSciFiArena:
 
         for step in range(max_steps):
             p.stepSimulation()
+            p.resetBasePositionAndOrientation(self.drone_id, [0, 0, 2.5], p.getQuaternionFromEuler([0, 0, 0]))
             self._move_obstacles()
             time.sleep(1./240.)
 
