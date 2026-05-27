@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 import os
-from trajectory_predictor import TrajectoryPredictor
-from controller import DroneController
+from models.trajectory_predictor import TrajectoryPredictor
+from control.controller import DroneController
 from safety import SafetyFilter
 
 def main():

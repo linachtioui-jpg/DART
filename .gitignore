@@ -9,3 +9,13 @@ Intermediate/
 Build/
 *.sln
 *.suo
+
+dataset/
+models/*.pkl
+outputs/
+.venv/
+.vscode/*
+!.vscode/settings.json
+models/
+src/pipeline/
+src/safety.py
