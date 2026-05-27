@@ -14,10 +14,6 @@ import numpy as np
 import time
 import torch
 
-##import gym_pybullet_drones
-##from gym_pybullet_drones.envs import CtrlAviary
-##from gym_pybullet_drones.utils.enums import DroneModel
-
 from models.trajectory_predictor import TrajectoryPredictor
 from control.controller import DroneController
 from safety import SafetyFilter
@@ -33,7 +29,7 @@ class RealDroneSciFiArena:
         p.setRealTimeSimulation(0)
 
         self._setup_arena()
-        self.drone_id = self._load_custom_drone("models/drone.obj")
+        self.drone_id = self._load_custom_drone("src/models/drone.obj")
 
         self.seq_len = 20
         self.n_obstacles = 12
@@ -43,6 +39,11 @@ class RealDroneSciFiArena:
         self._load_models()
         self.safety = SafetyFilter(min_clearance=0.8, max_speed=3.0)
         self.obstacle_ids = self._create_dynamic_objects()
+
+        # Force clean start
+        p.resetBasePositionAndOrientation(self.drone_id, [0, 0, 3.0], 
+                                         p.getQuaternionFromEuler([0, 0, 0]))
+        p.resetBaseVelocity(self.drone_id, [0, 0, 0], [0, 0, 0])
 
     def _setup_arena(self):
         plane = p.loadURDF("plane.urdf")
@@ -58,44 +59,19 @@ class RealDroneSciFiArena:
         vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[s/2 for s in size], rgbaColor=color)
         p.createMultiBody(0, col, vis, pos)
 
-    def _rewrite_urdf_no_transparency(self, urdf_path):
-        import re, shutil, os
-
-        with open(urdf_path, "r") as f:
-            content = f.read()
-
-        # Force all rgba attributes to full opacity
-        content = re.sub(
-            r'rgba="([\d.\s]+)"',
-            lambda m: f'rgba="{" ".join(m.group(1).split()[:3])} 1.0"',
-            content
-        )
-
-        # Write patched URDF next to the original so relative mesh paths still resolve
-        assets_dir = os.path.dirname(urdf_path)
-        patched_path = os.path.join(assets_dir, "cf2x_patched.urdf")
-
-        with open(patched_path, "w") as f:
-            f.write(content)
-
-        return patched_path
-
     def _load_custom_drone(self, obj_path):
         """Load any .obj file as a drone with a collision box underneath"""
 
         corrective_quat = p.getQuaternionFromEuler([np.pi/2, 0.0, 0.0])  # Rotate model to face forward
 
-        
-        # Visual mesh from your downloaded .obj
         visual_id = p.createVisualShape(
             p.GEOM_MESH,
             fileName=obj_path,
-            meshScale=[0.002, 0.002, 0.002],   # scale down — most models are huge
+            meshScale=[0.002, 0.002, 0.002],
             rgbaColor=[1.0, 1.0, 1.0, 1.0],
             visualFrameOrientation=corrective_quat
         )
 
-        # Simple box collision (mesh collision is slow and unstable in PyBullet)
         collision_id = p.createCollisionShape(
             p.GEOM_BOX,
             halfExtents=[0.15, 0.15, 0.06]
@@ -109,38 +85,16 @@ class RealDroneSciFiArena:
             baseOrientation=p.getQuaternionFromEuler([0, 0, 0])
         )
 
-        p.changeDynamics(drone_id, -1, linearDamping=0.05, angularDamping=30.0,lateralFriction=0.9,rollingFriction=0.1, spinningFriction=0.1, restitution=0.0,localInertiaDiagonal=[0.012, 0.012, 0.018])
+        p.changeDynamics(drone_id, -1, 
+                        linearDamping=0.15, 
+                        angularDamping=40.0,
+                        lateralFriction=0.9,
+                        rollingFriction=0.1, 
+                        spinningFriction=0.1, 
+                        restitution=0.0,
+                        localInertiaDiagonal=[0.012, 0.012, 0.018])
 
         return drone_id    
-
-    # def _load_clean_drone(self):
-    #     package_dir = os.path.dirname(gym_pybullet_drones.__file__)
-    #     urdf_path = os.path.join(package_dir, "assets", "cf2x.urdf")
-    #     urdf_path = self._rewrite_urdf_no_transparency(urdf_path)
-
-    #     if os.path.exists(urdf_path):
-    #         drone_id = p.loadURDF(
-    #             urdf_path,          # now points to cf2x_patched.urdf in assets/
-    #             [0, 0, 2.5],
-    #             globalScaling=10.0,
-    #             flags=p.URDF_USE_INERTIA_FROM_FILE
-    #         )   
-
-        #     num_joints = p.getNumJoints(drone_id)
-        #     for link_idx in [-1] + list(range(num_joints)):
-        #         p.changeVisualShape(
-        #             drone_id,
-        #             link_idx,
-        #             rgbaColor=[1.0, 1.0, 1.0, 1.0],
-        #             specularColor=[0.5, 0.5, 0.5]  # kills the transparent specular layer
-        #         )
-
-        #     return drone_id
-        # else:
-            # col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.25, 0.25, 0.08])
-            # vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.25, 0.25, 0.08],
-            #                         rgbaColor=[0, 0.7, 1, 1])
-            # return p.createMultiBody(0.8, col, vis, [0, 0, 2.5])
 
     def _create_dynamic_objects(self):
         obs_ids = []
@@ -182,7 +136,7 @@ class RealDroneSciFiArena:
 
     def _load_models(self):
         try:
-            self.predictor = TrajectoryPredictor.load("models/trajectory_predictor.pkl", device="cpu")
+            self.predictor = TrajectoryPredictor.load("src/models/trajectory_predictor.py", device="cuda" if torch.cuda.is_available() else "cpu")
             print("✅ Predictor loaded")
         except:
             self.predictor = None
@@ -207,12 +161,13 @@ class RealDroneSciFiArena:
 
         for step in range(max_steps):
             p.stepSimulation()
-            p.resetBasePositionAndOrientation(self.drone_id, [0, 0, 2.5], p.getQuaternionFromEuler([0, 0, 0]))
             self._move_obstacles()
             time.sleep(1./240.)
 
-            pos, _ = p.getBasePositionAndOrientation(self.drone_id)
-            vel, _ = p.getBaseVelocity(self.drone_id)
+            # Get current state
+            pos, orn = p.getBasePositionAndOrientation(self.drone_id)
+            vel, ang_vel = p.getBaseVelocity(self.drone_id)
+            
             drone_state = np.array([*pos, *vel, 0.,0.,0.], dtype=np.float32)
 
             self.drone_history.append(drone_state)
@@ -224,26 +179,56 @@ class RealDroneSciFiArena:
             if len(self.obs_history) > self.seq_len:
                 self.obs_history.pop(0)
 
-            if len(self.drone_history) >= self.seq_len and self.controller:
-                drone_past = np.array(self.drone_history)
-                obs_past = np.array(self.obs_history)
+            # Check orientation to evaluate stability (threshold around ~23 degrees)
+            roll, pitch, yaw = p.getEulerFromQuaternion(orn)
+            is_unstable = abs(roll) > 0.4 or abs(pitch) > 0.4
 
-                predicted = None
-                if self.predictor:
-                    try:
-                        predicted = self.predictor.predict(drone_past, obs_past)
-                        self._draw_predicted_path(predicted)
-                    except:
-                        pass
+            # ===================== MUTUALLY EXCLUSIVE CONTROL =====================
+            if len(self.drone_history) >= self.seq_len:
+                
+                # Condition A: Run strong stabilization if drone tilts excessively OR if ML agent is unavailable
+                if is_unstable or not self.controller:
+                    target_z = 3.0
+                    height_error = target_z - pos[2]
 
-                obs_flat = obs_past.reshape(self.seq_len, -1)
-                x_ctrl = np.concatenate([drone_past, obs_flat], axis=1)
+                    thrust = np.array([0.0, 0.0, 0.5 * 9.81 + height_error * 18.0])
 
-                raw = self.controller.predict_action(x_ctrl)
-                final = self.safety.filter_action(raw, drone_state, obs_states[0] if len(obs_states)>0 else None)
+                    torque = np.array([
+                        -roll * 80.0 - ang_vel[0] * 25.0,     # Strong on X axis (roll)
+                        -pitch * 60.0 - ang_vel[1] * 18.0,    # Strong on Y axis (pitch)
+                        -ang_vel[2] * 22.0
+                    ])
 
-                force = (np.array(final[:3]) - vel) * 25.0
-                p.applyExternalForce(self.drone_id, -1, force, [0,0,0], p.WORLD_FRAME)
+                    p.applyExternalForce(self.drone_id, -1, thrust, [0,0,0], p.WORLD_FRAME)
+                    p.applyExternalTorque(self.drone_id, -1, torque, p.WORLD_FRAME)
+                
+                # Condition B: ML tracking control takes full priority during normal, upright flight
+                elif self.controller:
+                    drone_past = np.array(self.drone_history)
+                    obs_past = np.array(self.obs_history)
+
+                    predicted = None
+                    if self.predictor:
+                        try:
+                            predicted = self.predictor.predict(drone_past, obs_past)
+                            self._draw_predicted_path(predicted)
+                        except:
+                            pass
+
+                    obs_flat = obs_past.reshape(self.seq_len, -1)
+                    x_ctrl = np.concatenate([drone_past, obs_flat], axis=1)
+
+                    raw = self.controller.predict_action(x_ctrl)
+                    final = self.safety.filter_action(raw, drone_state, obs_states[0] if len(obs_states)>0 else None)
+
+                    # Exclusive target trajectory force calculation
+                    force = (np.array(final[:3]) - vel) * 25.0
+                    p.applyExternalForce(self.drone_id, -1, force, [0,0,0], p.WORLD_FRAME)
+                    
+                    # Mild passive stabilization torque to counter minor external drifts without overriding the network
+                    passive_torque = np.array([-roll * 15.0, -pitch * 15.0, -ang_vel[2] * 5.0])
+                    p.applyExternalTorque(self.drone_id, -1, passive_torque, p.WORLD_FRAME)
+            # ======================================================================
 
             if step % 25 == 0:
                 print(f"Step {step:4d} | Drone @ [{pos[0]:.2f} {pos[1]:.2f} {pos[2]:.2f}]")
