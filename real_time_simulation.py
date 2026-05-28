@@ -1,209 +1,130 @@
-# real_time_simulation.py
+import time
+import numpy as np
+import pybullet as p
+import pybullet_data
 import sys
 import os
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
-if os.path.join(current_dir, "src") not in sys.path:
-    sys.path.insert(0, os.path.join(current_dir, "src"))
+# Path setup
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-import pybullet as p
-import pybullet_data
-import numpy as np
-import time
-import torch
-
-from models.trajectory_predictor import TrajectoryPredictor
-from control.controller import DroneController
-from safety import SafetyFilter
-
+try:
+    from control.controller import DroneController
+except ImportError:
+    DroneController = None
 
 class RealDroneSciFiArena:
     def __init__(self, gui=True):
-        print("🌌 Initializing Clean Sci-Fi Drone Arena...")
-
         self.client = p.connect(p.GUI if gui else p.DIRECT)
+        # REMOVE GUI WINDOWS
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+        p.configureDebugVisualizer(p.COV_ENABLE_SEGMENTATION_MARK_PREVIEW, 0)
+        p.configureDebugVisualizer(p.COV_ENABLE_DEPTH_BUFFER_PREVIEW, 0)
+        
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
-        p.setRealTimeSimulation(0)
+        p.setTimeStep(1.0 / 240.0)
+        
+        p.loadURDF("plane.urdf")
+        self.drone_id = self._load_custom_drone()
+        self.obstacle_ids = self._create_moving_rocks()
+        self.controller = DroneController() if DroneController else None
+        print("Controller:", self.controller)
+        print("DroneController import:", DroneController)
+        print(f"✅ Obstacles created: {len(self.obstacle_ids)}")
 
-        self._setup_arena()
-        self.drone_id = self._load_custom_drone("src/models/drone.obj")
+    def _load_custom_drone(self):
+        corrective = p.getQuaternionFromEuler([np.pi/2, 0, 0])
+        visual = p.createVisualShape(p.GEOM_MESH, fileName=os.path.join("src", "models", "drone.obj"), 
+                                     meshScale=[0.003]*3, visualFrameOrientation=corrective)
+        collision = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.25, 0.25, 0.1])
+        # Drone at 2.5m
+        drone = p.createMultiBody(0.7, collision, visual, [0, 0, 2.5], [0,0,0,1])
+        return drone
 
-        self.seq_len = 20
-        self.n_obstacles = 12
-        self.drone_history = []
-        self.obs_history = []
-
-        self._load_models()
-        self.safety = SafetyFilter(min_clearance=0.8, max_speed=3.0)
-        self.obstacle_ids = self._create_dynamic_objects()
-
-        # Force clean stable start
-        p.resetBasePositionAndOrientation(self.drone_id, [0, 0, 3.0], 
-                                         p.getQuaternionFromEuler([0, 0, 0]))
-        p.resetBaseVelocity(self.drone_id, [0, 0, 0], [0, 0, 0])
-
-    def _setup_arena(self):
-        plane = p.loadURDF("plane.urdf")
-        p.changeVisualShape(plane, -1, rgbaColor=[0.01, 0.01, 0.06, 1.0])
-
-        self._create_wall([-12, 0, 3], [0.3, 25, 6], [0, 0.9, 1, 0.6])
-        self._create_wall([12, 0, 3], [0.3, 25, 6], [0, 0.9, 1, 0.6])
-        self._create_wall([0, -12, 3], [25, 0.3, 6], [0, 0.9, 1, 0.6])
-        self._create_wall([0, 12, 3], [25, 0.3, 6], [0, 0.9, 1, 0.6])
-
-    def _create_wall(self, pos, size, color):
-        col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[s/2 for s in size])
-        vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[s/2 for s in size], rgbaColor=color)
-        p.createMultiBody(0, col, vis, pos)
-
-    def _load_custom_drone(self, obj_path):
-        corrective_quat = p.getQuaternionFromEuler([np.pi/2, 0.0, 0.0])
-
-        visual_id = p.createVisualShape(
-            p.GEOM_MESH,
-            fileName=obj_path,
-            meshScale=[0.002, 0.002, 0.002],
-            rgbaColor=[1.0, 1.0, 1.0, 1.0],
-            visualFrameOrientation=corrective_quat
-        )
-
-        collision_id = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.15, 0.15, 0.06])
-
-        drone_id = p.createMultiBody(
-            baseMass=0.5,
-            baseCollisionShapeIndex=collision_id,
-            baseVisualShapeIndex=visual_id,
-            basePosition=[0, 0, 2.5],
-            baseOrientation=p.getQuaternionFromEuler([0, 0, 0])
-        )
-
-        p.changeDynamics(drone_id, -1, 
-                        linearDamping=0.15, 
-                        angularDamping=50.0,
-                        lateralFriction=0.9,
-                        rollingFriction=0.1, 
-                        spinningFriction=0.1, 
-                        restitution=0.0,
-                        localInertiaDiagonal=[0.01, 0.01, 0.02])
-
-        return drone_id    
-
-    def _create_dynamic_objects(self):
+    def _create_moving_rocks(self):
         obs_ids = []
-        colors = [[1,0.3,0.6,1], [0.2,1,0.9,1], [1,0.8,0.1,1], [0.7,0.3,1,1]]
-        for i in range(self.n_obstacles):
-            shape = p.GEOM_SPHERE if i % 2 == 0 else p.GEOM_BOX
-            size = 0.42
-            if shape == p.GEOM_SPHERE:
-                col = p.createCollisionShape(shape, radius=size)
-                vis = p.createVisualShape(shape, radius=size, rgbaColor=colors[i % len(colors)])
-            else:
-                col = p.createCollisionShape(shape, halfExtents=[size]*3)
-                vis = p.createVisualShape(shape, halfExtents=[size]*3, rgbaColor=colors[i % len(colors)])
-            pos = [np.random.uniform(-9,9), np.random.uniform(-9,9), np.random.uniform(1.5,6)]
-            oid = p.createMultiBody(0.6, col, vis, pos)
+        visual = p.createVisualShape(p.GEOM_MESH, fileName=os.path.join("src", "models", "rock.obj"), meshScale=[0.5]*3)
+        collision = p.createCollisionShape(p.GEOM_SPHERE, radius=0.3)
+
+        for _ in range(12):
+            angle = np.random.uniform(0, 2*np.pi)
+            dist = np.random.uniform(5, 9)
+            # Spawn at varied heights, not just 2.0
+            z = np.random.uniform(1.5, 4.5)
+            pos = [dist * np.cos(angle), dist * np.sin(angle), z]
+
+            oid = p.createMultiBody(0, collision, visual, pos)
+            p.changeDynamics(oid, -1, mass=0)
             obs_ids.append(oid)
+
         return obs_ids
 
-    def _move_obstacles(self):
-        t = time.time()
-        for i, oid in enumerate(self.obstacle_ids):
-            angle = t * 0.6 + i * 1.4
-            speed = 1.1
-            vx = np.cos(angle) * speed
-            vy = np.sin(angle * 0.8) * speed
-            p.resetBaseVelocity(oid, [vx, vy, 0.2 * np.sin(t + i)])
-
-    def _load_models(self):
-        try:
-            self.predictor = TrajectoryPredictor.load("models/trajectory_predictor.pkl", device="cpu")
-            print("✅ Predictor loaded")
-        except Exception as e:
-            print(f"⚠️ Predictor load failed: {e}")
-            self.predictor = None
-
-        try:
-            self.controller = DroneController()
-            self.controller.load("models/reaction_controller.pth")
-            print("✅ Controller loaded")
-        except Exception as e:
-            print(f"⚠️ Controller load failed: {e}")
-            print("Creating fresh controller...")
-            self.controller = self._create_fresh_controller()
-
-    def _create_fresh_controller(self):
-        controller = DroneController()
-        input_dim = self.seq_len * (9 + self.n_obstacles * 6)
-        controller.model.network[0] = torch.nn.Linear(input_dim, 128)
-        print(f"✅ Fresh controller created (input_dim={input_dim})")
-        return controller
-
-    def run(self, max_steps=10000):
-        print("🌌 Simulation Running...")
-
-        for step in range(max_steps):
+    def run(self):
+        print("🚀 Running...")
+        step = 0
+        while True:
             p.stepSimulation()
-            self._move_obstacles()
-            time.sleep(1./240.)
 
             pos, orn = p.getBasePositionAndOrientation(self.drone_id)
             vel, ang_vel = p.getBaseVelocity(self.drone_id)
-            
-            drone_state = np.array([*pos, *vel, 0.,0.,0.], dtype=np.float32)
+            roll, pitch, yaw = p.getEulerFromQuaternion(orn)
 
-            self.drone_history.append(drone_state)
-            if len(self.drone_history) > self.seq_len:
-                self.drone_history.pop(0)
+            # --- Obstacle states ---
+            obs_states = []
+            # --- Re-aim rocks at drone every frame ---
+            for oid in self.obstacle_ids:
+                opos, _ = p.getBasePositionAndOrientation(oid)
+                target = np.array(pos)   # drone's current position
+                diff = target - np.array(opos)
+                dist = np.linalg.norm(diff) + 1e-6
+                direction = diff / dist
+                speed = 2.5
+                p.resetBaseVelocity(oid, (direction * speed).tolist())
 
-            obs_states = self.get_obstacle_states()
-            self.obs_history.append(obs_states)
-            if len(self.obs_history) > self.seq_len:
-                self.obs_history.pop(0)
+            # --- Reactive dodge (no NN needed, runs every frame) ---
+            vx_cmd = vy_cmd = vz_cmd = 0.0
+            for obs in obs_states:
+                diff = np.array(pos) - obs[:3]
+                dist = np.linalg.norm(diff) + 1e-6
+                if dist < 4.0:
+                    weight = 1.0 / (dist ** 2)
+                    vx_cmd += (diff[0] / dist) * weight * 10.0
+                    vy_cmd += (diff[1] / dist) * weight * 10.0
+                    vz_cmd += (diff[2] / dist) * weight * 5.0
 
-            # ===================== STRONG STABILIZATION =====================
-            roll = pitch = yaw = 0.0
-            if len(self.drone_history) >= self.seq_len:
-                roll, pitch, yaw = p.getEulerFromQuaternion(orn)
+            # --- Altitude hold ---
+            vz_cmd += (2.5 - pos[2]) * 3.0
 
-                target_z = 3.0
-                height_error = target_z - pos[2]
+            # --- Apply forces ---
+            c, s = np.cos(yaw), np.sin(yaw)
+            vx_w = vx_cmd * c - vy_cmd * s
+            vy_w = vx_cmd * s + vy_cmd * c
 
-                thrust = np.array([0.0, 0.0, 0.5*9.81 + height_error * 18.0])
+            target_roll  = np.clip(-vy_w * 1.5, -0.8, 0.8)
+            target_pitch = np.clip( vx_w * 1.5, -0.8, 0.8)
 
-                torque = np.array([
-                    -roll * 90.0 - ang_vel[0] * 28.0,
-                    -pitch * 70.0 - ang_vel[1] * 20.0,
-                    -ang_vel[2] * 25.0
-                ])
+            thrust_z = 9.81 * 0.7 + (vz_cmd - vel[2]) * 80.0 + (2.5 - pos[2]) * 15.0
+            thrust = [0, 0, max(0.0, thrust_z)]
+            torque = [
+                (target_roll  - roll)  * 800.0 - ang_vel[0] * 40.0,
+                (target_pitch - pitch) * 800.0 - ang_vel[1] * 40.0,
+                -ang_vel[2] * 80.0
+            ]
 
-                p.applyExternalForce(self.drone_id, -1, thrust, [0,0,0], p.WORLD_FRAME)
-                p.applyExternalTorque(self.drone_id, -1, torque, p.WORLD_FRAME)
-            # ================================================================
+            p.applyExternalForce(self.drone_id, -1, thrust, [0,0,0], p.WORLD_FRAME)
+            p.applyExternalTorque(self.drone_id, -1, torque, p.WORLD_FRAME)
 
-            if step % 25 == 0:
-                print(f"Step {step:4d} | Drone @ [{pos[0]:.2f} {pos[1]:.2f} {pos[2]:.2f}] | Roll: {roll:.3f} Pitch: {pitch:.3f}")
+            if step % 60 == 0:
+                if len(obs_states) > 0:
+                    min_d = min(np.linalg.norm(np.array(pos) - o[:3]) for o in obs_states)
+                    print(f"Step {step:5d} | pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}) | closest={min_d:.2f}m")
+                else:
+                    print(f"Step {step:5d} | pos=({pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}) | no obstacles found!")
 
-        p.disconnect()
-
-    def get_obstacle_states(self):
-        states = []
-        for oid in self.obstacle_ids:
-            pos, _ = p.getBasePositionAndOrientation(oid)
-            vel, _ = p.getBaseVelocity(oid)
-            states.append([*pos, *vel])
-        return np.array(states, dtype=np.float32)
+            step += 1
+            time.sleep(1/240)
 
 
 if __name__ == "__main__":
-    sim = RealDroneSciFiArena(gui=True)
-    try:
-        sim.run()
-    except KeyboardInterrupt:
-        print("\n🌌 Simulation ended.")
-        p.disconnect()
-    except Exception as e:
-        print(f"Error: {e}")
-        p.disconnect()
+    RealDroneSciFiArena().run()

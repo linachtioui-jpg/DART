@@ -55,7 +55,8 @@ CUSTOM_CONFIG = {
     },
 
     "obstacles": {
-        "n_obstacles": 4,
+        "n_obstacles": 12,
+        "max_tracked_obstacles": 12, 
         "types"      : ["linear", "circular", "random_walk"],
         "max_speed"  : 1.5,
     },

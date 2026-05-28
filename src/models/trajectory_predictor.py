@@ -32,9 +32,16 @@ from __future__ import annotations
 
 from importlib.resources import path
 import os
+import sys
 import pickle
 import numpy as np
 from typing import Optional
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
+
+# Inject it into Python's search paths
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 from src import pipeline    
 
 try:
@@ -193,7 +200,7 @@ class TrajectoryPredictor:
         seq_len: int = 20,
         future_len: int = 10,
         features: int = 9,
-        n_obstacles: int = 4,
+        n_obstacles: int = 12,
         hidden_size: int = 128,
         num_layers: int = 2,
         device: str = "cpu",

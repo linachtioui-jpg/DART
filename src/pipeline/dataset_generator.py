@@ -39,10 +39,17 @@ windows, each offset by 1 time-step.
 """
 
 from __future__ import annotations
+import sys
 
 import os
 import copy
 import numpy as np
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
+
+# Inject it into Python's search paths
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from src.pipeline.config import DEFAULT_CONFIG
 from src.pipeline.trajectory_generator import generate_trajectory
