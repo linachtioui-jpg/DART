@@ -55,8 +55,8 @@ CUSTOM_CONFIG = {
     },
 
     "obstacles": {
-        "n_obstacles": 12,
-        "max_tracked_obstacles": 12, 
+        "n_obstacles": 25,
+        "max_tracked_obstacles": 25, 
         "types"      : ["linear", "circular", "random_walk"],
         "max_speed"  : 1.5,
     },
@@ -112,7 +112,7 @@ def model_exists() -> bool:
         with open(MODEL_PATH, "rb") as f:
             state = pickle.load(f)
         return (
-            state.get("format_version") == 12
+            state.get("format_version") == 25
             and state.get("target_mode") == (
                 "relative_position_normalized_state_smooth_dynamic_labels_v12"
             )

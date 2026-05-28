@@ -51,7 +51,7 @@ print("-> Initial actions shape:", y_action.shape)
 # --- GLOBAL MATRICES CONSTANTS ---
 N = x_drone.shape[0]
 seq_len = 20
-max_tracked_obs = 12
+max_tracked_obs =25
 
 print("🔄 Processing raw logs into unified 660-element sequences...")
 combined_samples = []
@@ -67,7 +67,7 @@ for idx in range(N):
 
         expected_obs_features = max_tracked_obs * 6
         # Handle zero-padding if the raw data file has fewer than 4 obstacles
-        if len(t_obs) < 24:
+        if len(t_obs) < 150:
             padded_t_obs = np.zeros(24, dtype=np.float32)
             padded_t_obs[:len(t_obs)] = t_obs
             t_obs = padded_t_obs

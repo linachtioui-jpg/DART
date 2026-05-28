@@ -25,7 +25,7 @@ class ReactionController(nn.Module):
         # Calculate dimensions dynamically from config:
         seq_len = DEFAULT_CONFIG["dataset"]["seq_len"]                       # 20
         # ✨ CHANGE THIS: Track fixed subset instead of entire simulation count
-        max_obs = DEFAULT_CONFIG["obstacles"]["max_tracked_obstacles"]       # 4 
+        max_obs = 25
         
         drone_feat = 9                                                       # x, y, z, vx, vy, vz, ax, ay, az
         obs_feat = 6                                                         # x, y, z, vx, vy, vz
