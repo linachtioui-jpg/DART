@@ -10,8 +10,8 @@ N_OBS_FULL = 25
 N_OBS_CTRL = 25
 
 # ── Boundary avoidance buffers ─────────────────────────────────────────────
-BOUNDARY_BUFFER   = 1.0
-BOUNDARY_STRENGTH = 15.0
+BOUNDARY_BUFFER   = 5.0
+BOUNDARY_STRENGTH = 5.0
 
 TARGET_ALT = 2.5
 ARENA_HALF = 15.0
@@ -45,20 +45,21 @@ EVASION_SPEED   = 6.0
 EVASION_BLEND   = 0.72
 TTC_THRESHOLD   = 2.8
 MIN_CLOSING     = 0.4
+DETECTION_RADIUS = 7.0
 
 # ── Combat (evasion) gains — unlocked when urgency > 0 ───────────────────
 # Normal flight stays glassy-smooth (10° max tilt).
 # The moment a threat is detected these scale in so dodges are snappy.
 COMBAT_VEL_P       = 7.0   # vs cruise 2.0  — tracks velocity setpoint hard
-COMBAT_VEL_MAX_ACC = 18.0  # vs cruise 4.0  — allows fierce acceleration
-COMBAT_MAX_TILT    = 0.48  # rad ≈ 27°       — real lean during a dodge
+COMBAT_VEL_MAX_ACC = 19.0  # vs cruise 4.0  — allows fierce acceleration
+COMBAT_MAX_TILT    = 0.50  # rad ≈ 27°       — real lean during a dodge
 COMBAT_ATT_P       = 14.0  # vs cruise 5.0  — snaps to angle fast
 COMBAT_ATT_MAX_RATE = 9.0  # vs cruise 2.5  — rapid rotation
 COMBAT_RATE_P      = 0.22  # vs cruise 0.10
-COMBAT_EVASION_SPEED = 22.0 # vs 12.0        — how fast it throws itself sideways
+COMBAT_EVASION_SPEED = 26.0 # vs 12.0        — how fast it throws itself sideways
 
 # ── Emergency safety layer ────────────────────────────────────────────────
-EMERGENCY_RADIUS  = 1.0    # m  — hard override trigger distance
+EMERGENCY_RADIUS  = 1.5    # m  — hard override trigger distance
 EMERGENCY_SPEED   = 14.0    # m/s — safe push-away (reduced to prevent flip)
 EMERGENCY_THR     = 0.78   # slightly above hover; full throttle caused flips
 EMERGENCY_MAX_TILT = 0.38  # rad ≈ 22° — hard dodge, still stable
@@ -74,6 +75,8 @@ class MLDroneArena:
 
     def __init__(self, gui=True):
         self.client = p.connect(p.GUI if gui else p.DIRECT)
+        # In __init__, after p.connect():
+        p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 0)
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -GRAVITY)
@@ -112,6 +115,14 @@ class MLDroneArena:
         self._evade_vec  = np.zeros(3)
         self._evade_mag  = 0.0
         self._evade_lock = 0.0
+        # In __init__:
+        self._trail_positions = []
+        self._trail_line_ids  = []
+        TRAIL_LEN = 80
+        # Closest obstacle predicted path
+        self._pred_line_ids = []
+
+        
 
     # ── Scene helpers ──────────────────────────────────────────────────────
 
@@ -149,6 +160,7 @@ class MLDroneArena:
         drone = p.createMultiBody(MASS, col, visual, [0, 0, TARGET_ALT], [0, 0, 0, 1])
         p.changeDynamics(drone, -1, linearDamping=0.1, angularDamping=4.0)
         return drone
+    
 
     def _create_rocks(self):
         ids = []
@@ -371,79 +383,83 @@ class MLDroneArena:
     # ── Evasion layer ──────────────────────────────────────────────────────
 
     def _compute_evasion(self, drone_pos, drone_vel, obs_states, dt):
+        """Rock evasion + boundary only"""
         best_urgency = 0.0
         best_evade   = np.zeros(3)
 
+        # Rock Evasion
         for obs in obs_states:
             obs_pos  = obs[:3].astype(float)
             obs_vel  = obs[3:6].astype(float)
             rel_pos  = obs_pos - drone_pos
             dist     = np.linalg.norm(rel_pos)
+            
             if dist > EVASION_RADIUS or dist < 1e-6:
                 continue
+                
             threat_dir = rel_pos / dist
             rel_vel    = obs_vel - drone_vel
             closing    = -np.dot(threat_dir, rel_vel)
+            
             if closing < MIN_CLOSING:
                 continue
+                
             ttc = dist / (closing + 1e-6)
             if ttc > TTC_THRESHOLD:
                 continue
+                
             urgency = np.clip(
-                (1.0 - ttc / TTC_THRESHOLD) * (1.0 - dist / EVASION_RADIUS), 0.0, 1.0)
-            if urgency <= best_urgency:
-                continue
+                (1.0 - ttc / TTC_THRESHOLD) * (1.0 - dist / EVASION_RADIUS), 
+                0.0, 1.0)
+            
+            if urgency > best_urgency:
+                horiz = np.array([threat_dir[0], threat_dir[1], 0.0])
+                hlen  = np.linalg.norm(horiz)
+                if hlen < 0.1:
+                    horiz = np.array([1.0, 0.0, 0.0])
+                else:
+                    horiz /= hlen
 
-            horiz = np.array([threat_dir[0], threat_dir[1], 0.0])
-            hlen  = np.linalg.norm(horiz)
-            if hlen < 0.1:
-                horiz = np.array([1.0, 0.0, 0.0])
-            else:
-                horiz /= hlen
+                perp_a = np.array([-horiz[1],  horiz[0], 0.0])
+                perp_b = np.array([ horiz[1], -horiz[0], 0.0])
+                obs_h  = np.array([obs_vel[0], obs_vel[1], 0.0])
+                perp   = perp_a if -np.dot(perp_a, obs_h) >= -np.dot(perp_b, obs_h) else perp_b
 
-            perp_a = np.array([-horiz[1],  horiz[0], 0.0])
-            perp_b = np.array([ horiz[1], -horiz[0], 0.0])
-            obs_h  = np.array([obs_vel[0], obs_vel[1], 0.0])
-            perp   = perp_a if -np.dot(perp_a, obs_h) >= -np.dot(perp_b, obs_h) else perp_b
+                raw = 0.85 * perp + 0.15 * (-horiz)
+                n   = np.linalg.norm(raw)
+                best_evade   = raw / n if n > 1e-6 else raw
+                best_urgency = urgency
 
-            raw = 0.85 * perp + 0.15 * (-horiz)
-            n   = np.linalg.norm(raw)
-            best_urgency = urgency
-            best_evade   = raw / n if n > 1e-6 else raw
-
-        # ── Boundary push — computed independently, never gated by urgency ──
-        # ── Replace the boundary section in _compute_evasion with this: ────────
-    
-    # Define a safety margin. Walls are at +/- ARENA_HALF
-    # We apply a force that grows exponentially as the drone gets closer to the wall
+        # Boundary avoidance
         margin = BOUNDARY_BUFFER
         boundary_vel = np.zeros(3)
         
-        # Repulsion function: Force = Strength / (distance_to_wall^2)
-        for dim in [0, 1]: # X and Y axes
+        for dim in [0, 1]:
             pos_dim = drone_pos[dim]
-            # Distance to positive wall and negative wall
             dist_pos = ARENA_HALF - pos_dim
             dist_neg = pos_dim - (-ARENA_HALF)
             
             if dist_pos < margin:
-                # Pushes in the negative direction
                 boundary_vel[dim] -= BOUNDARY_STRENGTH / (dist_pos + 0.1)**2
             if dist_neg < margin:
-                # Pushes in the positive direction
                 boundary_vel[dim] += BOUNDARY_STRENGTH / (dist_neg + 0.1)**2
 
-        # Floor and Ceiling (Z axis)
         if drone_pos[2] < FLOOR + margin:
             boundary_vel[2] += BOUNDARY_STRENGTH / ((drone_pos[2] - FLOOR) + 0.1)**2
         elif drone_pos[2] > CEIL - margin:
             boundary_vel[2] -= BOUNDARY_STRENGTH / ((CEIL - drone_pos[2]) + 0.1)**2
 
-        # Now, boundary_vel is a "repulsive velocity" that grows as you approach the wall.
-        # Return this combined with your existing evasion calculations.
-        return (self._evade_vec * self._evade_mag * EVASION_SPEED) + boundary_vel, self._evade_mag, boundary_vel
+        # Final combination
+        final_evade = best_evade * best_urgency + boundary_vel * 0.7
 
-        if best_urgency > 0.15:
+        n = np.linalg.norm(final_evade)
+        if n > 1e-6:
+            final_evade /= n
+
+        urgency = best_urgency
+
+        # Update internal state
+        if best_urgency > 0.12:
             self._evade_vec  = best_evade
             self._evade_mag  = best_urgency
             self._evade_lock = 0.35
@@ -452,9 +468,8 @@ class MLDroneArena:
             if self._evade_lock <= 0.0:
                 self._evade_mag = max(0.0, self._evade_mag - dt * 2.5)
 
-        # boundary_vel returned separately — caller adds it directly so walls
-        # always repel regardless of rock-threat urgency.
-        return self._evade_vec * self._evade_mag * EVASION_SPEED, self._evade_mag, boundary_vel
+        return final_evade * EVASION_SPEED, urgency, boundary_vel
+
 
     # ── Main loop ──────────────────────────────────────────────────────────
 
@@ -476,15 +491,54 @@ class MLDroneArena:
             vel     = np.array(vel,     dtype=float)
             ang_vel = np.array(ang_vel, dtype=float)
 
+
             acc = (vel - self.prev_vel) / dt
             self.prev_vel = vel.copy()
-
+            
             obs_all  = self._get_obstacle_states()
             obs_ctrl = self._closest_obs_for_controller(obs_all, pos)
 
             p.resetDebugVisualizerCamera(3.5, 40, -28, pos.tolist())
+
+            # Motion trail — remove oldest line, add newest segment
+            self._trail_positions.append(pos.copy())
+            if len(self._trail_positions) > 60:
+                self._trail_positions.pop(0)
+                if self._trail_line_ids:
+                    p.removeUserDebugItem(self._trail_line_ids.pop(0))
+            if len(self._trail_positions) >= 2:
+                alpha = 1.0
+                fade  = alpha * (len(self._trail_positions) / 60)
+                lid   = p.addUserDebugLine(
+                    self._trail_positions[-2].tolist(),
+                    self._trail_positions[-1].tolist(),
+                    lineColorRGB=[0.2 + 0.6*fade, 0.5*fade, 1.0],
+                    lineWidth=1.5 + fade)
+                self._trail_line_ids.append(lid)
             self._launch_next_rock(pos, vel)
             self._drive_active_rocks()
+
+            # Predicted path of closest obstacle — full redraw every 6 steps
+            if step % 6 == 0 and len(obs_all) > 0:
+                for lid in self._pred_line_ids:
+                    p.removeUserDebugItem(lid)
+                self._pred_line_ids.clear()
+
+                dists   = np.linalg.norm(obs_all[:, :3] - pos, axis=1)
+                closest = obs_all[int(np.argmin(dists))]
+                o_pos   = closest[:3].astype(float)
+                o_vel   = closest[3:6].astype(float)
+                dist_now = float(np.linalg.norm(o_pos - pos))
+
+                if dist_now < EVASION_RADIUS and np.linalg.norm(o_vel) > 0.3:
+                    heat      = float(np.clip(1.0 - dist_now / EVASION_RADIUS, 0, 1))
+                    predicted = o_pos + o_vel * 2.0   # where it'll be in 2 seconds
+                    self._pred_line_ids.append(p.addUserDebugLine(
+                        o_pos.tolist(), predicted.tolist(),
+                        lineColorRGB=[1.0, 1.0 - heat, 1.0 - heat],
+                        lineWidth=2.5))
+
+        
 
             # History for trained controller
             drone_state = np.concatenate([pos, vel, acc]).astype(np.float32)
@@ -524,7 +578,7 @@ class MLDroneArena:
             is_emergency, emergency_vel = self._check_emergency(pos, obs_all)
 
             if is_emergency:
-                if step % 60 == 0:
+                if step % 60== 0:
                     print(f"Step {step:5d} | ⚠️  EMERGENCY DODGE")
 
                 vx_err = emergency_vel[0] - vel[0]
@@ -585,7 +639,7 @@ class MLDroneArena:
                 vz_des = np.clip(vz_des, -5.0, 5.0)
 
             evade_vel, urgency, boundary_vel = self._compute_evasion(pos, vel, obs_all, dt)
-            blend = np.clip(urgency * 2.0, 0.0, 1.0)
+            blend = np.clip(urgency * 2.5, 0.0, 1.0)
 
             # ── Interpolate cruise ↔ combat gains based on urgency ─────────
             # At urgency=0 the drone is glassy-smooth.

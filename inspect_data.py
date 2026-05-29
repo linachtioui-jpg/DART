@@ -1,7 +1,7 @@
 import numpy as np
 
 # Load your file
-data = np.load('C:\\Users\\GIGABYTE\\PPP-drone\\dataset\\train\\had_collision.npy')
+data = np.load('C:\\Users\\GIGABYTE\\PPP-drone\\dataset\\train\\actions.npy')
 
 # Print the essential metadata
 print(f"Shape of data: {data.shape}")
