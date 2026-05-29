@@ -311,7 +311,7 @@ class TrajectoryPredictor:
         # patience=6 epochs detecting each plateau before halving LR.
         scheduler = optim.lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=learning_rate * 10,
+            max_lr=learning_rate *4,
             epochs=int(epochs),
             steps_per_epoch=len(loader),
             pct_start=0.25,
