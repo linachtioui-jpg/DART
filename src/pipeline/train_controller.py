@@ -1,14 +1,13 @@
 import sys
 import os
+import sys
+import os
 
-# Path fix to ensure src can be discovered cleanly
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(current_dir))  # Go up to PPP-drone root
+project_root = os.path.dirname(os.path.dirname(current_dir))  # PPP-drone root
 
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
 
 print(f"Project root added: {project_root}")
 
@@ -17,7 +16,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+# ✅ Direct import — no importlib, no stale cache
 from src.control.controller import DroneController
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
 
 # =========================================================
 # Create missing directories
@@ -25,7 +30,7 @@ from src.control.controller import DroneController
 os.makedirs("models", exist_ok=True)
 
 # =========================================================
-# Load dataset (Updated to track 660 features)
+# Load dataset (Updated to track 3180 features)
 # =========================================================
 print("📦 Loading dataset components...")
 
@@ -53,37 +58,26 @@ N = x_drone.shape[0]
 seq_len = 20
 max_tracked_obs =25
 
-print("🔄 Processing raw logs into unified 660-element sequences...")
+print("🔄 Processing raw logs into unified 3180-element sequences...")
 combined_samples = []
 
 for idx in range(N):
     timestep_windows = []
     for t in range(seq_len):
         t_drone = x_drone[idx, t] 
-        
-        # Pull up to 4 obstacles per step (4 * 6 = 24 features)
         t_obs = x_obstacles[idx, t, :max_tracked_obs].flatten()
 
-
-        expected_obs_features = max_tracked_obs * 6
-        # Handle zero-padding if the raw data file has fewer than 4 obstacles
-        if len(t_obs) < 150:
-            padded_t_obs = np.zeros(24, dtype=np.float32)
-            padded_t_obs[:len(t_obs)] = t_obs
-            t_obs = padded_t_obs
-
-        # Merge into exactly 33 items for this timestep
+        # Merge drone + obstacles for this timestep
         step_features = np.concatenate([t_drone, t_obs])
         timestep_windows.append(step_features)
         
-    # Flatten window into a single continuous vector: 20 * 33 = 660 elements
+    # Flatten all timesteps into one vector
     combined_samples.append(np.array(timestep_windows).flatten())
 
 x_ctrl = np.array(combined_samples, dtype=np.float32)
-print("-> Unified training input shape:", x_ctrl.shape) # Output is strictly (N, 660)
-
+print("-> Unified training input shape:", x_ctrl.shape)
 input_dim = x_ctrl.shape[1]
-print(f"-> Network will auto-configure to input_dim = {input_dim}")
+print(f"-> Final input_dim = {input_dim}")
 
 # =========================================================
 # Global Tensors & Variables Definition (Clears Pylance Warnings)
@@ -97,11 +91,13 @@ batch_size = 256
 # =========================================================
 # Model Setup
 # =========================================================
-controller = DroneController()
+print(f"-> Network will use input_dim={input_dim}, hidden_size=384")
 
-# Safely adapt the model layers to match our 660 architecture inputs explicitly
-if hasattr(controller, 'model') and hasattr(controller.model, 'network'):
-    controller.model.network[0] = nn.Linear(input_dim, 128)
+# Création propre du modèle (on ne touche plus manuellement aux layers)
+controller = DroneController(
+    input_dim=3180,      # Doit être 660 ou 3180 selon ta logique
+    hidden_size=384
+)
 
 criterion = nn.MSELoss()
 optimizer = optim.Adam(controller.model.parameters(), lr=0.001)
@@ -117,9 +113,8 @@ for epoch in range(epochs):
 
     for i in range(0, X.size(0), batch_size):
         indices = permutation[i:i + batch_size]
-        batch_x = X[indices]
-        batch_y = Y[indices]
-
+        batch_x = X[indices].to(controller.device)
+        batch_y = Y[indices].to(controller.device)
         optimizer.zero_grad()
         predictions = controller.model(batch_x)
         loss = criterion(predictions, batch_y)

@@ -22,6 +22,7 @@ import sys
 import pickle
 import json
 import numpy as np
+import matplotlib.pyplot as plt
 
 # Allow internal pipeline scripts to find each other cleanly
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -192,7 +193,7 @@ def demo_prediction() -> None:
         future_len  = future_len,
         features    = 9,
         n_obstacles = n_obstacles,
-        hidden_size = 128,
+        hidden_size = 384,
         num_layers  = 2,
         device      = device,
         dt          = CUSTOM_CONFIG["time_step"],
@@ -279,6 +280,58 @@ def demo_test_prediction() -> None:
     metrics_test     = evaluate_predictions(predictions_test, drone_future_test)
     _print_metrics(metrics_test)
 
+    # ====================== AJOUT ICI ======================
+    print_section("Step 8.5 · Rapport Membre 5")
+    generate_member5_report(predictions_test, drone_future_test, output_folder="outputs/member5")
+    # =======================================================
+
+def generate_member5_report(predictions, ground_truth, output_folder="outputs"):
+    """
+    PARTIE ÉVALUATION - MEMBRE 5
+    Analyse les tableaux Numpy de prédiction et génère les graphiques.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import os
+
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # On prend le premier test du dataset pour dessiner la trajectoire
+    # On suppose que x = feature 0 et y = feature 1
+    ia_x = predictions[0, :, 0]
+    ia_y = predictions[0, :, 1]
+
+    reel_x = ground_truth[0, :, 0]
+    reel_y = ground_truth[0, :, 1]
+
+    # --- Graphique 1 : Trajectoires ---
+    plt.figure(figsize=(10, 6))
+    plt.plot(ia_x, ia_y, linestyle='-', label="IA (Prédiction)", color='blue', linewidth=2)
+    plt.plot(reel_x, reel_y, linestyle='--', label="Réel (Ground Truth)", color='red', linewidth=2)
+
+    plt.title("Évaluation Membre 5 : Comparaison de la trajectoire")
+    plt.xlabel("Position X (m)")
+    plt.ylabel("Position Y (m)")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(f"{output_folder}/m5_trajectoires.png")
+    plt.close()
+
+    # --- Graphique 2 : Fluidité (Jerk estimé) ---
+    # Calcul basique de la variation d'accélération pour évaluer la fluidité
+    jerk_ia = np.mean(np.abs(np.diff(np.diff(ia_x)))) + np.mean(np.abs(np.diff(np.diff(ia_y))))
+    jerk_reel = np.mean(np.abs(np.diff(np.diff(reel_x)))) + np.mean(np.abs(np.diff(np.diff(reel_y))))
+
+    plt.figure(figsize=(8, 5))
+    plt.bar(["IA (Prédiction)", "Réel (Vérité terrain)"], [jerk_ia, jerk_reel], color=['blue', 'red'])
+    plt.title("Évaluation Membre 5 : Analyse de la fluidité (Jerk)")
+    plt.ylabel("Jerk estimé (m/s³)")
+    plt.savefig(f"{output_folder}/m5_fluidite.png")
+    plt.close()
+
+    print(f"  ✅ Graphiques Membre 5 sauvegardés dans /{output_folder}")
+
 
 def _print_metrics(m: dict) -> None:
     """Print the standard metric block."""
@@ -313,3 +366,4 @@ if __name__ == "__main__":
 
     demo_test_prediction()
     print("\n✅ All steps completed successfully.")
+    

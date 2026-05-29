@@ -76,7 +76,7 @@ class MLDroneArena:
     def __init__(self, gui=True):
         self.client = p.connect(p.GUI if gui else p.DIRECT)
         # In __init__, after p.connect():
-        p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 0)
+        p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1)
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -GRAVITY)

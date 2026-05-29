@@ -113,7 +113,7 @@ class TrajectoryGRU(nn.Module):
     def __init__(
         self,
         encoder_input_size: int,
-        hidden_size: int = 128,
+        hidden_size: int = 384,
         num_layers: int = 2,
         output_size: int = 9,
         future_len: int = 10,
@@ -201,7 +201,7 @@ class TrajectoryPredictor:
         future_len: int = 10,
         features: int = 9,
         n_obstacles: int = 12,
-        hidden_size: int = 128,
+        hidden_size: int = 384,
         num_layers: int = 2,
         device: str = "cpu",
         dt: float = 0.05,
@@ -891,7 +891,7 @@ if __name__ == "__main__":
         future_len  = DEFAULT_CONFIG["dataset"]["future_len"],
         features    = 9,
         n_obstacles = DEFAULT_CONFIG["obstacles"]["n_obstacles"],
-        hidden_size = 128,
+        hidden_size = 384,
         num_layers  = 2,
         device      = "cpu",
     )
