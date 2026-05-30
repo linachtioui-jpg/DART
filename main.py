@@ -37,7 +37,7 @@ from src.pipeline.trajectory_generator import generate_trajectory, get_feature_n
 from src.pipeline.obstacle_simulation import simulate_obstacles, ObstacleSimulator
 from src.pipeline.dataset_generator import generate_dataset, save_dataset, get_model_input
 from src.pipeline.simulator import run_simulation, visualise_simulation
-from models.trajectory_predictor import TrajectoryPredictor
+from src.models.trajectory_predictor import TrajectoryPredictor
 from src.pipeline.utils import print_section, set_seed, load_npy
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ CUSTOM_CONFIG = {
 
     "obstacles": {
         "n_obstacles": 25,
-        "max_tracked_obstacles": 25, 
+        "max_tracked_obstacles": 25,
         "types"      : ["linear", "circular", "random_walk"],
         "max_speed"  : 1.5,
     },
@@ -291,25 +291,30 @@ def generate_member5_report(predictions, ground_truth, output_folder="outputs"):
     Analyse les tableaux Numpy de prédiction et génère les graphiques.
     """
     import matplotlib.pyplot as plt
+    from scipy.signal import savgol_filter
     import numpy as np
     import os
 
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    # On prend le premier test du dataset pour dessiner la trajectoire
-    # On suppose que x = feature 0 et y = feature 1
-    ia_x = predictions[0, :, 0]
-    ia_y = predictions[0, :, 1]
-
+    # --- Graphique 1 : Trajectoires (sample 0) ---
+    ia_x   = predictions[0, :, 0]
+    ia_y   = predictions[0, :, 1]
     reel_x = ground_truth[0, :, 0]
     reel_y = ground_truth[0, :, 1]
 
-    # --- Graphique 1 : Trajectoires ---
-    plt.figure(figsize=(10, 6))
-    plt.plot(ia_x, ia_y, linestyle='-', label="IA (Prédiction)", color='blue', linewidth=2)
-    plt.plot(reel_x, reel_y, linestyle='--', label="Réel (Ground Truth)", color='red', linewidth=2)
+    # Smooth predicted trajectory to remove step-to-step noise
+    if len(ia_x) >= 5:
+        ia_x_smooth = savgol_filter(ia_x, window_length=7, polyorder=2)
+        ia_y_smooth = savgol_filter(ia_y, window_length=7, polyorder=2)
+    else:
+        ia_x_smooth = ia_x
+        ia_y_smooth = ia_y
 
+    plt.figure(figsize=(10, 6))
+    plt.plot(ia_x_smooth, ia_y_smooth, linestyle='-',  label="IA (Prédiction)",  color='blue', linewidth=2)
+    plt.plot(reel_x,      reel_y,      linestyle='--', label="Réel (Ground Truth)", color='red', linewidth=2)
     plt.title("Évaluation Membre 5 : Comparaison de la trajectoire")
     plt.xlabel("Position X (m)")
     plt.ylabel("Position Y (m)")
@@ -319,9 +324,28 @@ def generate_member5_report(predictions, ground_truth, output_folder="outputs"):
     plt.close()
 
     # --- Graphique 2 : Fluidité (Jerk estimé) ---
-    # Calcul basique de la variation d'accélération pour évaluer la fluidité
-    jerk_ia = np.mean(np.abs(np.diff(np.diff(ia_x)))) + np.mean(np.abs(np.diff(np.diff(ia_y))))
-    jerk_reel = np.mean(np.abs(np.diff(np.diff(reel_x)))) + np.mean(np.abs(np.diff(np.diff(reel_y))))
+    # Average jerk over ALL samples instead of just sample 0
+    # for a stable, representative result
+    all_jerk_ia   = []
+    all_jerk_reel = []
+
+    for i in range(len(predictions)):
+        x_ia = savgol_filter(predictions[i, :, 0], window_length=5, polyorder=2)
+        y_ia = savgol_filter(predictions[i, :, 1], window_length=5, polyorder=2)
+        x_reel = ground_truth[i, :, 0]
+        y_reel = ground_truth[i, :, 1]
+
+        all_jerk_ia.append(
+            np.mean(np.abs(np.diff(np.diff(np.diff(x_ia))))) +
+            np.mean(np.abs(np.diff(np.diff(np.diff(y_ia)))))
+        )
+        all_jerk_reel.append(
+            np.mean(np.abs(np.diff(np.diff(np.diff(x_reel))))) +
+            np.mean(np.abs(np.diff(np.diff(np.diff(y_reel)))))
+        )
+
+    jerk_ia   = np.mean(all_jerk_ia)
+    jerk_reel = np.mean(all_jerk_reel)
 
     plt.figure(figsize=(8, 5))
     plt.bar(["IA (Prédiction)", "Réel (Vérité terrain)"], [jerk_ia, jerk_reel], color=['blue', 'red'])
@@ -330,8 +354,7 @@ def generate_member5_report(predictions, ground_truth, output_folder="outputs"):
     plt.savefig(f"{output_folder}/m5_fluidite.png")
     plt.close()
 
-    print(f"  ✅ Graphiques Membre 5 sauvegardés dans /{output_folder}")
-
+    print(f"  ✅ Graphiques Membre 5 sauvegardés dans /{output_folder}")
 
 def _print_metrics(m: dict) -> None:
     """Print the standard metric block."""
@@ -339,6 +362,24 @@ def _print_metrics(m: dict) -> None:
     print(f"    Full-feature RMSE       : {m['full_feature_rmse']:.6f}")
     print(f"    Position RMSE           : {m['position_rmse_m']:.4f} m")
     print(f"    Mean Position Error     : {m['mean_position_error_m']:.4f} m")
+
+
+def demo_train_controller() -> None:
+    print_section("Step 7.5 · Train Reaction Controller (Member 3)")
+
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "src/pipeline/train_controller.py"],
+        cwd=os.path.dirname(os.path.abspath(__file__))
+    )
+    if result.returncode == 0:
+        print("  ✅ Controller trained and saved to models/reaction_controller.pth")
+    else:
+        print("  ✗ Controller training failed.")
+
+def controller_exists() -> bool:
+    path = "models/reaction_controller.pth"
+    return os.path.exists(path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -364,6 +405,11 @@ if __name__ == "__main__":
     else:
         print("\n✓ Compatible model already exists. Skipping training.")
 
+    if not controller_exists():                  # ← add this block
+        print("\nController missing. Training reaction controller…")
+        demo_train_controller()
+    else:
+        print("\n✓ Reaction controller already exists. Skipping training.")
+
     demo_test_prediction()
     print("\n✅ All steps completed successfully.")
-    

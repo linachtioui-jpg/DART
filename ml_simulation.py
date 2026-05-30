@@ -3,7 +3,7 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 import os
-
+from src.models.trajectory_predictor import TrajectoryPredictor
 # ── Simulation constants ───────────────────────────────────────────────────
 SEQ_LEN    = 20
 N_OBS_FULL = 25
@@ -13,8 +13,18 @@ N_OBS_CTRL = 25
 BOUNDARY_BUFFER   = 5.0
 BOUNDARY_STRENGTH = 5.0
 
+
+# Define a target waypoint sequence (or load from trajectory_generator)
+WAYPOINTS = [
+    np.array([5.0,  0.0, 2.5]),
+    np.array([5.0,  5.0, 3.0]),
+    np.array([0.0,  5.0, 2.5]),
+    np.array([-5.0, 0.0, 2.0]),
+]
+WAYPOINT_THRESH = 1.0  # switch to next when within 1 m
+
 TARGET_ALT = 2.2
-ARENA_HALF = 15.0
+ARENA_HALF = 30.0
 CEIL       = 6.0
 FLOOR      = 0.7
 
@@ -101,6 +111,13 @@ class MLDroneArena:
         self.controller = DroneController()
         self.controller.load(ctrl_path)
         print("✅ reaction_controller.pth loaded")
+        self.predictor = None
+        try:
+            pred_path = os.path.join(current_dir, "models", "trajectory_predictor.pkl")
+            self.predictor = TrajectoryPredictor.load(pred_path, device="cpu")
+            print("✅ trajectory_predictor.pkl loaded")
+        except Exception as e:
+            print(f"⚠️  Predictor not loaded: {e}")
 
         self.drone_history    = []
         self.obs_history      = []
@@ -115,6 +132,8 @@ class MLDroneArena:
         self._evade_vec  = np.zeros(3)
         self._evade_mag  = 0.0
         self._evade_lock = 0.0
+        self.current_waypoint = 0
+        
         # In __init__:
         self._trail_positions = []
         self._trail_line_ids  = []
@@ -167,18 +186,9 @@ class MLDroneArena:
         SCALE = [0.25, 0.25, 0.25] # Adjust this to resize your rock
         
         # Pre-load the Visual Shape
-        try:
-            vbase = p.createVisualShape(p.GEOM_MESH,
-                                        fileName=os.path.join("src", "models", "rochck.obj"),
-                                        meshScale=SCALE)
-            # Pre-load the Collision Shape
-            cbase = p.createCollisionShape(p.GEOM_MESH,
-                                        fileName=os.path.join("src", "models", "rochgxfdk.obj"),
-                                        meshScale=SCALE)
-        except Exception as e:
-            print(f"⚠️ Could not load mesh: {e}")
-            vbase = None
-            cbase = None
+        vbase = None
+        cbase = None
+            
 
         colors = [[1.0, 0.3, 0.3, 1], [0.3, 0.8, 1.0, 1], [1.0, 0.6, 0.2, 1], [0.8, 0.3, 1.0, 1]]
         
@@ -470,6 +480,18 @@ class MLDroneArena:
 
         return final_evade * EVASION_SPEED, urgency, boundary_vel
 
+    def _predict_future_obs(self, drone_history, obs_history):
+        """Return predicted future obstacle positions (shape: N_obs, future_len, 3)."""
+        if self.predictor is None or len(drone_history) < SEQ_LEN:
+            return None
+        try:
+            drone_seq = np.array(drone_history[-SEQ_LEN:], dtype=np.float32)  # (20, 9)
+            obs_seq   = np.array(obs_history[-SEQ_LEN:], dtype=np.float32)    # (20, N_obs, 6)
+            # predictor.predict() expects batched input: (1, seq_len, features)
+            pred = self.predictor.predict(drone_seq[np.newaxis], obs_seq[np.newaxis])
+            return pred[0]  # (future_len, 9) — predicted drone future states
+        except Exception as e:
+            return None
 
     # ── Main loop ──────────────────────────────────────────────────────────
 
@@ -618,7 +640,23 @@ class MLDroneArena:
             # PRIORITY 3 — Normal flight (ML controller + evasion blend)
             # ══════════════════════════════════════════════════════════════
 
-            vx_des = vy_des = vz_des = yaw_rate_des = 0.0
+            # ── Waypoint pursuit (replaces the ML controller or supplements it) ──
+            target   = WAYPOINTS[self.current_waypoint]
+            to_goal  = target - pos
+            dist     = np.linalg.norm(to_goal)
+
+            if dist < WAYPOINT_THRESH:
+                self.current_waypoint = (self.current_waypoint + 1) % len(WAYPOINTS)
+                target  = WAYPOINTS[self.current_waypoint]
+                to_goal = target - pos
+                dist    = np.linalg.norm(to_goal) + 1e-6
+
+            direction = to_goal / dist
+            CRUISE_SPEED = 2.0
+            vx_des = direction[0] * CRUISE_SPEED
+            vy_des = direction[1] * CRUISE_SPEED
+            vz_des = direction[2] * CRUISE_SPEED  # replaces altitude PID for z
+            vx_des = vy_des = vz_des = yaw_rate_des = 0.0  # ← must stay here
             ready  = len(self.drone_history) == SEQ_LEN
 
             if ready:
@@ -640,6 +678,19 @@ class MLDroneArena:
 
             evade_vel, urgency, boundary_vel = self._compute_evasion(pos, vel, obs_all, dt)
             blend = np.clip(urgency * 2.5, 0.0, 1.0)
+            # After: evade_vel, urgency, boundary_vel = self._compute_evasion(...)
+
+            # ── Predictive layer: dodge obstacles' future positions ──────────────────
+            predicted_future = self._predict_future_obs(self.drone_history, self.obs_history)
+            if predicted_future is not None:
+                # predicted_future shape: (future_len, 9) — columns 0:3 are x,y,z
+                future_pos = predicted_future[:, :3]           # next N steps of drone prediction
+                # Use first predicted step to warn of upcoming collision
+                pred_threat = future_pos[0]                    # where drone is predicted to be in 1 step
+                pred_dist_to_obs = np.linalg.norm(obs_all[:, :3] - pred_threat, axis=1).min()
+                if pred_dist_to_obs < EVASION_RADIUS * 1.2:    # widen evasion when predictor warns
+                    urgency = min(1.0, urgency + 0.2)
+                    blend   = np.clip(urgency * 2.5, 0.0, 1.0)
 
             # ── Interpolate cruise ↔ combat gains based on urgency ─────────
             # At urgency=0 the drone is glassy-smooth.
