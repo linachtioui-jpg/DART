@@ -22,8 +22,8 @@ DEFAULT_CONFIG = {
 
     # ── Obstacles ─────────────────────────────────────────────────────────────
     "obstacles": {
-        "n_obstacles": 12,
-        "max_tracked_obstacles": 12,
+        "n_obstacles": 25,
+        "max_tracked_obstacles": 25,
         "types": ["linear", "circular", "random_walk"],
         "radius": 0.5,              # Obstacle bounding sphere (metres)
         "max_speed": 1.5,           # m/s

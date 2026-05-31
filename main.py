@@ -282,12 +282,12 @@ def demo_test_prediction() -> None:
 
     # ====================== AJOUT ICI ======================
     print_section("Step 8.5 · Rapport Membre 5")
-    generate_member5_report(predictions_test, drone_future_test, output_folder="outputs/member5")
+    generate_report(predictions_test, drone_future_test, output_folder="outputs/tests")
     # =======================================================
 
-def generate_member5_report(predictions, ground_truth, output_folder="outputs"):
+def generate_report(predictions, ground_truth, output_folder="outputs"):
     """
-    PARTIE ÉVALUATION - MEMBRE 5
+    PARTIE ÉVALUATION
     Analyse les tableaux Numpy de prédiction et génère les graphiques.
     """
     import matplotlib.pyplot as plt
