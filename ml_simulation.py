@@ -12,6 +12,7 @@ N_OBS_CTRL = 25
 # ── Boundary avoidance buffers ─────────────────────────────────────────────
 BOUNDARY_BUFFER   = 5.0
 BOUNDARY_STRENGTH = 5.0
+CRUISE_SPEED = 2.0
 
 
 # Define a target waypoint sequence (or load from trajectory_generator)
@@ -97,12 +98,12 @@ class MLDroneArena:
 
         self._build_walls()
         self.drone_id     = self._load_drone()
-        self.obstacle_ids = self._create_rocks()
+        self.obstacle_ids = self._create_obstacles()
         self.drone_shadow     = self._make_shadow(r=0.35, color=[0,0,0,0.35])
         self.obstacle_shadows = [self._make_shadow(r=0.25, color=[0,0,0,0.22])
                                  for _ in self.obstacle_ids]
 
-        self._active_rocks     = {}
+        self._active_obstacles = {}
         self._next_launch_time = time.time()
         self._launch_index     = 0
 
@@ -181,9 +182,9 @@ class MLDroneArena:
         return drone
     
 
-    def _create_rocks(self):
+    def _create_obstacles(self):
         ids = []
-        SCALE = [0.25, 0.25, 0.25] # Adjust this to resize your rock
+        SCALE = [0.25, 0.25, 0.25] # Adjust this to resize your obstacle
         
         # Pre-load the Visual Shape
         vbase = None
@@ -237,37 +238,37 @@ class MLDroneArena:
 
     # ── Obstacle management (Modified for coherent movement) ────────────────
 
-    def _launch_next_rock(self, drone_pos, drone_vel):
+    def _launch_next_obstacle(self, drone_pos, drone_vel):
         if time.time() < self._next_launch_time:
             return
         oid = self.obstacle_ids[self._launch_index % N_OBS_FULL]
         self._launch_index += 1
         self._next_launch_time = time.time() + 2.5 # Slightly faster frequency
 
-        # Create "Corridors": Rocks travel across the center of the arena
+        # Create "Corridors": obstacles travel across the center of the arena
         # Path 0: X-axis sweep, Path 1: Y-axis sweep
         path_type = self._launch_index % 2
         z = np.random.uniform(2.0, 5.0)
         
         if path_type == 0: # Crossing X
-            start = [np.random.choice([-10, 10]), np.random.uniform(-5, 5), z]
+            start = [np.random.choice([-15, 15]), np.random.uniform(-5, 5), z]
             end   = [-start[0], np.random.uniform(-5, 5), z]
         else: # Crossing Y
-            start = [np.random.uniform(-5, 5), np.random.choice([-10, 10]), z]
+            start = [np.random.uniform(-5, 5), np.random.choice([-15, 15]), z]
             end   = [np.random.uniform(-5, 5), -start[1], z]
 
         p.resetBasePositionAndOrientation(oid, start, [0,0,0,1])
         p.resetBaseVelocity(oid, [0,0,0], [0,0,0])
 
         # Store the path
-        self._active_rocks[oid] = np.array(end)
+        self._active_obstacles[oid] = np.array(end)
         p.changeDynamics(oid, -1, mass=1.0, linearDamping=0.01)
 
-    def _drive_active_rocks(self):
-        # Move rocks at a constant, non-chaotic velocity
+    def _drive_active_obs(self):
+        # Move obstacles at a constant, non-chaotic velocity
         speed = 5.0
         done = []
-        for oid, target in list(self._active_rocks.items()):
+        for oid, target in list(self._active_obstacles.items()):
             pos = np.array(p.getBasePositionAndOrientation(oid)[0])
             to_target = target - pos
             dist = np.linalg.norm(to_target)
@@ -281,7 +282,7 @@ class MLDroneArena:
             p.resetBaseVelocity(oid, vel_vec.tolist(), [0,0,0])
             
         for oid in done:
-            del self._active_rocks[oid]
+            del self._active_obstacles[oid]
 
     # ── Emergency safety layer ─────────────────────────────────────────────
 
@@ -393,11 +394,11 @@ class MLDroneArena:
     # ── Evasion layer ──────────────────────────────────────────────────────
 
     def _compute_evasion(self, drone_pos, drone_vel, obs_states, dt):
-        """Rock evasion + boundary only"""
+        """obstacle evasion + boundary only"""
         best_urgency = 0.0
         best_evade   = np.zeros(3)
 
-        # Rock Evasion
+        # obstacle Evasion
         for obs in obs_states:
             obs_pos  = obs[:3].astype(float)
             obs_vel  = obs[3:6].astype(float)
@@ -537,8 +538,8 @@ class MLDroneArena:
                     lineColorRGB=[0.2 + 0.6*fade, 0.5*fade, 1.0],
                     lineWidth=1.5 + fade)
                 self._trail_line_ids.append(lid)
-            self._launch_next_rock(pos, vel)
-            self._drive_active_rocks()
+            self._launch_next_obstacle(pos, vel)
+            self._drive_active_obs()
 
             # Predicted path of closest obstacle — full redraw every 6 steps
             if step % 6 == 0 and len(obs_all) > 0:
@@ -652,29 +653,23 @@ class MLDroneArena:
                 dist    = np.linalg.norm(to_goal) + 1e-6
 
             direction = to_goal / dist
-            CRUISE_SPEED = 2.0
-            vx_des = direction[0] * CRUISE_SPEED
-            vy_des = direction[1] * CRUISE_SPEED
-            vz_des = direction[2] * CRUISE_SPEED  # replaces altitude PID for z
-            vx_des = vy_des = vz_des = yaw_rate_des = 0.0  # ← must stay here
-            ready  = len(self.drone_history) == SEQ_LEN
+            vx_des       = direction[0] * CRUISE_SPEED
+            vy_des       = direction[1] * CRUISE_SPEED
+            vz_des       = direction[2] * CRUISE_SPEED
+            yaw_rate_des = 0.0
 
-            if ready:
+            # ML controller overrides waypoint velocity when buffer is full
+            if len(self.drone_history) == SEQ_LEN:
                 x_ctrl = np.concatenate([
                     np.concatenate([self.drone_history[t],
-                                   self.ctrl_obs_history[t].flatten()])
+                                    self.ctrl_obs_history[t].flatten()])
                     for t in range(SEQ_LEN)
                 ]).astype(np.float32)
-                action = self.controller.predict_action(x_ctrl)
-
-                vx_des       = float(action[0]) * 3.0
-                vy_des       = float(action[1]) * 3.0
-                vz_des       = float(action[2]) * 1.6
-                yaw_rate_des = float(action[3]) * 1.5
-
-                vx_des = np.clip(vx_des, -7.0, 7.0)
-                vy_des = np.clip(vy_des, -7.0, 7.0)
-                vz_des = np.clip(vz_des, -5.0, 5.0)
+                action       = self.controller.predict_action(x_ctrl)
+                vx_des       = float(np.clip(action[0] * 3.0, -7.0, 7.0))
+                vy_des       = float(np.clip(action[1] * 3.0, -7.0, 7.0))
+                vz_des       = float(np.clip(action[2] * 1.6, -5.0, 5.0))
+                yaw_rate_des = float(action[3] * 1.5)
 
             evade_vel, urgency, boundary_vel = self._compute_evasion(pos, vel, obs_all, dt)
             blend = np.clip(urgency * 2.5, 0.0, 1.0)
@@ -704,7 +699,7 @@ class MLDroneArena:
             eff_rate_p      = RATE_P      + u * (COMBAT_RATE_P       - RATE_P)
             eff_evade_speed = 12.0        + u * (COMBAT_EVASION_SPEED - 12.0)
 
-            # boundary_vel is always added — walls repel even with zero rock urgency
+            # boundary_vel is always added — walls repel even with zero obstacle urgency
             vx_des_w = (1.0 - blend) * vx_des + blend * evade_vel[0] * eff_evade_speed + boundary_vel[0]
             vy_des_w = (1.0 - blend) * vy_des + blend * evade_vel[1] * eff_evade_speed + boundary_vel[1]
             vz_des   = vz_des + boundary_vel[2]
