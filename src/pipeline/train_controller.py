@@ -1,134 +1,129 @@
 import sys
 import os
-import sys
-import os
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(current_dir))  # PPP-drone root
+current_dir  = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(os.path.dirname(current_dir))
 
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-print(f"Project root added: {project_root}")
+print(f"Project root: {project_root}")
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-# ✅ Direct import — no importlib, no stale cache
 from src.control.controller import DroneController
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
+from src.models.trajectory_predictor import TrajectoryPredictor
 
+os.makedirs(os.path.join(project_root, "models"), exist_ok=True)
 
 # =========================================================
-# Create missing directories
+# Load dataset
 # =========================================================
-os.makedirs("models", exist_ok=True)
+print("📦 Loading dataset...")
+
+drone_path   = os.path.join(project_root, "dataset", "train", "drone_past.npy")
+obs_path     = os.path.join(project_root, "dataset", "train", "obs_past.npy")
+actions_path = os.path.join(project_root, "dataset", "train", "actions.npy")
+
+x_drone     = np.load(drone_path)
+x_obstacles = np.load(obs_path)
+y_action    = np.load(actions_path).astype(np.float32)
+
+print(f"   drone_past shape    : {x_drone.shape}")
+print(f"   obs_past shape      : {x_obstacles.shape}")
+print(f"   actions shape       : {y_action.shape}")
+
+N               = x_drone.shape[0]
+seq_len         = 20
+max_tracked_obs = 25
 
 # =========================================================
-# Load dataset (Updated to track 3180 features)
+# Build 3180-dim past input vectors
 # =========================================================
-print("📦 Loading dataset components...")
-
-# Paths assume running from project root. Adjust if files are inside src/pipeline/dataset
-drone_path = "dataset/train/drone_past.npy"
-obs_path = "dataset/train/obs_past.npy"     # Verify your team's exact file name here!
-actions_path = "dataset/train/actions.npy"
-
-if not os.path.exists(drone_path):
-    # Fallback to check local directory if executed inside src/pipeline/
-    drone_path = os.path.join(project_root, drone_path)
-    obs_path = os.path.join(project_root, obs_path)
-    actions_path = os.path.join(project_root, actions_path)
-
-x_drone = np.load(drone_path)        # Expected Shape: (N, 20, 9)
-x_obstacles = np.load(obs_path)      # Expected Shape: (N, 20, N_obs, 6)
-y_action = np.load(actions_path)     # Expected Shape: (N, 4)
-
-print("-> Initial drone_past shape:", x_drone.shape)
-print("-> Initial objects_past shape:", x_obstacles.shape)
-print("-> Initial actions shape:", y_action.shape)
-
-# --- GLOBAL MATRICES CONSTANTS ---
-N = x_drone.shape[0]
-seq_len = 20
-max_tracked_obs =25
-
-print("🔄 Processing raw logs into unified 3180-element sequences...")
+print("🔄 Building 3180-element input vectors...")
 combined_samples = []
-
 for idx in range(N):
-    timestep_windows = []
+    window = []
     for t in range(seq_len):
-        t_drone = x_drone[idx, t] 
-        t_obs = x_obstacles[idx, t, :max_tracked_obs].flatten()
-
-        # Merge drone + obstacles for this timestep
-        step_features = np.concatenate([t_drone, t_obs])
-        timestep_windows.append(step_features)
-        
-    # Flatten all timesteps into one vector
-    combined_samples.append(np.array(timestep_windows).flatten())
+        t_drone = x_drone[idx, t]
+        t_obs   = x_obstacles[idx, t, :max_tracked_obs].flatten()
+        window.append(np.concatenate([t_drone, t_obs]))
+    combined_samples.append(np.array(window).flatten())
 
 x_ctrl = np.array(combined_samples, dtype=np.float32)
-print("-> Unified training input shape:", x_ctrl.shape)
-input_dim = x_ctrl.shape[1]
-print(f"-> Final input_dim = {input_dim}")
+print(f"   Past input shape    : {x_ctrl.shape}")
 
 # =========================================================
-# Global Tensors & Variables Definition (Clears Pylance Warnings)
+# Append GRU predictions (90 values) to each input
 # =========================================================
-X = torch.tensor(x_ctrl, dtype=torch.float32)
+print("🔮 Generating GRU predictions for training data...")
+
+pred_path = os.path.join(project_root, "models", "trajectory_predictor.pkl")
+predictor = TrajectoryPredictor.load(pred_path, device="cpu")
+
+x_future_list = []
+for i in range(N):
+    drone_seq = x_drone[i].astype(np.float32)
+    obs_seq   = x_obstacles[i].astype(np.float32)
+    try:
+        pred = predictor.predict(
+            drone_seq[np.newaxis], obs_seq[np.newaxis])
+        x_future_list.append(pred[0].flatten().astype(np.float32))
+    except Exception:
+        x_future_list.append(np.zeros(90, dtype=np.float32))
+    if i % 5000 == 0:
+        print(f"   {i}/{N} samples processed")
+
+x_future = np.array(x_future_list, dtype=np.float32)
+x_ctrl   = np.concatenate([x_ctrl, x_future], axis=1)
+print(f"   Final input shape   : {x_ctrl.shape}")
+
+# =========================================================
+# Tensors
+# =========================================================
+X = torch.tensor(x_ctrl,   dtype=torch.float32)
 Y = torch.tensor(y_action, dtype=torch.float32)
 
-epochs = 20
+# =========================================================
+# Model setup
+# =========================================================
+epochs     = 20
 batch_size = 256
 
-# =========================================================
-# Model Setup
-# =========================================================
-print(f"-> Network will use input_dim={input_dim}, hidden_size=384")
+print(f"\n-> Network input_dim=3270, hidden_size=384")
 
-# Création propre du modèle (on ne touche plus manuellement aux layers)
-controller = DroneController(
-    input_dim=3180,      # Doit être 660 ou 3180 selon ta logique
-    hidden_size=384
-)
-
-criterion = nn.MSELoss()
-optimizer = optim.Adam(controller.model.parameters(), lr=0.001)
+controller = DroneController(input_dim=3270, hidden_size=384)
+criterion  = nn.MSELoss()
+optimizer  = optim.Adam(controller.model.parameters(), lr=0.001)
 
 # =========================================================
 # Training loop
 # =========================================================
-print(f"\n🚀 Training reaction network over {epochs} epochs...")
+print(f"🚀 Training over {epochs} epochs...\n")
 
 for epoch in range(epochs):
     permutation = torch.randperm(X.size(0))
-    epoch_loss = 0.0
+    epoch_loss  = 0.0
 
     for i in range(0, X.size(0), batch_size):
         indices = permutation[i:i + batch_size]
         batch_x = X[indices].to(controller.device)
         batch_y = Y[indices].to(controller.device)
         optimizer.zero_grad()
-        predictions = controller.model(batch_x)
-        loss = criterion(predictions, batch_y)
+        loss = criterion(controller.model(batch_x), batch_y)
         loss.backward()
         optimizer.step()
-
         epoch_loss += loss.item()
 
     print(f"Epoch {epoch+1:02d}/{epochs} | Loss: {epoch_loss:.6f}")
 
 # =========================================================
-# Save model
+# Save
 # =========================================================
-# Outputs directly to project root models directory
-output_model_path = os.path.join(project_root, "models", "reaction_controller.pth")
-controller.save(output_model_path)
-print(f"\n✅ Controller weights trained and successfully saved to '{output_model_path}'!")
+output_path = os.path.join(project_root, "models", "reaction_controller.pth")
+controller.save(output_path)
+print(f"\n✅ Model saved to '{output_path}'")
+print(f"   Input dim: 3270 (3180 past states + 90 GRU prediction)")
